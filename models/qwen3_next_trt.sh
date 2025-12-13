@@ -6,7 +6,6 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 exec "${ROOT_DIR}/tensorrt.sh" \
   --model "Qwen/Qwen3-Next-80B-A3B-Instruct-FP8" \
-  --backend "tensorrt" \
   --tp 4 \
   --ep 4 \
   --max-batch 16 \

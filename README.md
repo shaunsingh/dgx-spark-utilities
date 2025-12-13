@@ -6,6 +6,8 @@ Utilities for working with DGX Spark, mostly garbage testing but some useful bit
 
 Builds an optimized docker image for vLLM & Torch w/ support for 12.1a, optimized triton, prerelease flashinfer, BLAS, etc.
 
+The default nvidia release is missing a few critical fixes from master
+
 `docker build -f scripts/Dockerfile.vllm -t vllm:intellect3 .`
 
 - `vllm.sh`, `sglang.sh`, `tensorrt.sh`, `model_catalog.sh`
