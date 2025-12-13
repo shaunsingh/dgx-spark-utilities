@@ -1,0 +1,44 @@
+diff --git a/.ci/aarch64_linux/aarch64_ci_build.sh b/.ci/aarch64_linux/aarch64_ci_build.sh
+index 830614c7339..15b2d9978df 100644
+--- a/.ci/aarch64_linux/aarch64_ci_build.sh
++++ b/.ci/aarch64_linux/aarch64_ci_build.sh
+@@ -11,7 +11,7 @@ elif [[ "$GPU_ARCH_VERSION" == *"12.8"* ]]; then
+ elif [[ "$GPU_ARCH_VERSION" == *"12.9"* ]]; then
+     export TORCH_CUDA_ARCH_LIST="8.0;9.0;10.0;12.0"
+ elif [[ "$GPU_ARCH_VERSION" == *"13.0"* ]]; then
+-    export TORCH_CUDA_ARCH_LIST="8.0;9.0;10.0;11.0;12.0+PTX"
++    export TORCH_CUDA_ARCH_LIST="8.0;9.0;10.0;11.0;12.0+PTX;12.1+PTX"
+ fi
+ 
+ # Compress the fatbin with -compress-mode=size for CUDA 13
+diff --git a/.ci/magma/Makefile b/.ci/magma/Makefile
+index 4169aedd03f..9cad921961a 100644
+--- a/.ci/magma/Makefile
++++ b/.ci/magma/Makefile
+@@ -28,7 +28,7 @@ clean:
+ 
+ .PHONY: magma-cuda130
+ magma-cuda130: DESIRED_CUDA := 13.0
+-magma-cuda130: CUDA_ARCH_LIST := -gencode arch=compute_80,code=sm_80 -gencode arch=compute_86,code=sm_86 -gencode arch=compute_90,code=sm_90 -gencode arch=compute_100,code=sm_100 -gencode arch=compute_120,code=sm_120
++magma-cuda130: CUDA_ARCH_LIST := -gencode arch=compute_80,code=sm_80 -gencode arch=compute_86,code=sm_86 -gencode arch=compute_90,code=sm_90 -gencode arch=compute_100,code=sm_100 -gencode arch=compute_120,code=sm_120 -gencode arch=compute_121,code=sm_121
+ magma-cuda130:
+ 	$(DOCKER_RUN)
+diff --git a/cmake/Codegen.cmake b/cmake/Codegen.cmake
+index e4973c849a1..c1ee94975a7 100644
+--- a/cmake/Codegen.cmake
++++ b/cmake/Codegen.cmake
+@@ -106,12 +106,17 @@ if(INTERN_BUILD_ATEN_OPS)
+         if("${_arch}" STREQUAL "120a")
+           if(_existing_arch_flags MATCHES ".*compute_120.*")
+             list(APPEND _file_compile_flags "-gencode;arch=compute_120a,code=sm_120a")
+           endif()
+         endif()
++        if("${_arch}" STREQUAL "121a")
++          if(_existing_arch_flags MATCHES ".*compute_121.*")
++            list(APPEND _file_compile_flags "-gencode;arch=compute_121a,code=sm_121a")
++          endif()
++        endif()
+       endforeach()
+       list(JOIN _file_compile_flags " " _file_compile_flags)
+ 
+
