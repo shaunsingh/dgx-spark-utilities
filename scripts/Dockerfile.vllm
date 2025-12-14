@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-# Build: docker build -f scripts/Dockerfile.vllm -t vllm:intellect3 .
+# Build: docker build --progress=plain -f scripts/Dockerfile.vllm -t vllm:intellect3 .
 # Run:   VLLM_IMAGE=vllm:intellect3 broken/intellect3_nvfp4_vllm.sh
 
 ARG CUDA_IMAGE_BUILDER=nvidia/cuda:13.1.0-devel-ubuntu24.04
@@ -8,11 +8,9 @@ ARG CUDA_IMAGE_RUNTIME=nvidia/cuda:13.1.0-runtime-ubuntu24.04
 FROM ${CUDA_IMAGE_BUILDER} AS builder
 
 ARG DEBIAN_FRONTEND=noninteractive
-
 ARG PYTHON_VERSION=3.12
 
-# Defaults tuned for Grace+Blackwell / GB10.
-# You can override any of these with `--build-arg ...`.
+# Override with --build-arg.
 ARG TORCH_CUDA_ARCH_LIST_DEFAULT="12.1a"
 ARG CPU_OPT_FLAGS="-O3 -pipe -march=native -mtune=native"
 ARG ENABLE_CUDNN=1
@@ -22,205 +20,255 @@ ARG ENABLE_TRITON_SOURCE=1
 ARG ENABLE_FLASH_ATTN=1
 
 ARG PYTORCH_REPO=https://github.com/pytorch/pytorch.git
-ARG PYTORCH_REF=v2.9.1
+# ARG PYTORCH_REF=2.9.1
+ARG PYTORCH_REF=main
 ARG APPLY_PYTORCH_SM121_PATCH=1
 
 ARG TRITON_REPO=https://github.com/triton-lang/triton.git
 ARG TRITON_REF=main
 
+ARG LLVM_BUILD_FROM_SOURCE=0
+ARG LLVM_VERSION=21
+ARG LLVM_REPO=https://github.com/llvm/llvm-project.git
+ARG LLVM_REF=main
+ARG LLVM_PREFIX=/opt/llvm
+
 ARG FLASH_ATTN_REPO=https://github.com/Dao-AILab/flash-attention.git
 ARG FLASH_ATTN_REF=main
 
-ENV PATH="/root/.cargo/bin:/usr/local/cuda/bin:${PATH}" \
+ARG VLLM_REPO=https://github.com/vllm-project/vllm.git
+ARG VLLM_REF=main
+
+ENV PATH="/opt/vllm/.venv/bin:/usr/local/bin:/usr/local/cuda/bin:${PATH}" \
     LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH}" \
     TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST_DEFAULT}" \
     TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas \
     TIKTOKEN_ENCODINGS_BASE=/opt/tiktoken_encodings \
     UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    CCACHE_DIR=/root/.cache/ccache \
+    VIRTUAL_ENV=/opt/vllm/.venv
 
-SHELL ["/bin/bash", "-lc"]
+SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-      "python${PYTHON_VERSION}" "python${PYTHON_VERSION}-dev" "python${PYTHON_VERSION}-venv" python3-pip \
+# System deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python${PYTHON_VERSION} python${PYTHON_VERSION}-dev python${PYTHON_VERSION}-venv python3-pip \
       build-essential git wget curl ca-certificates \
-      pkg-config libssl-dev libffi-dev \
-      libopenmpi-dev libomp-dev libopenblas-dev \
-      ninja-build cmake \
-      clang lld patchelf \
+      pkg-config libssl-dev libffi-dev libopenmpi-dev libomp-dev libopenblas-dev \
+      ninja-build cmake clang lld patchelf ccache \
       libedit-dev libxml2-dev zlib1g-dev && \
     rm -rf /var/lib/apt/lists/*
 
-# cuDNN / NCCL / cuFile (GDS): prefer system packages if available.
-# We fail loudly when requested but unavailable, instead of silently disabling.
-RUN set -eux; \
-    apt-get update; \
-    if [[ "${ENABLE_CUDNN}" == "1" ]]; then \
-      ok=0; \
-      for pkgs in "cudnn9-cuda-13-1" "cudnn9-cuda-13-0" "libcudnn9 libcudnn9-dev"; do \
-        if apt-get install -y --no-install-recommends ${pkgs}; then ok=1; break; fi; \
-      done; \
-      if [[ "${ok}" != "1" ]]; then echo "[ERROR] Failed to install cuDNN (ENABLE_CUDNN=1)"; exit 1; fi; \
-    fi; \
-    if [[ "${ENABLE_SYSTEM_NCCL}" == "1" ]]; then \
-      ok=0; \
-      for pkgs in "libnccl2 libnccl-dev" "libnccl-dev"; do \
-        if apt-get install -y --no-install-recommends ${pkgs}; then ok=1; break; fi; \
-      done; \
-      if [[ "${ok}" != "1" ]]; then echo "[ERROR] Failed to install NCCL dev/runtime (ENABLE_SYSTEM_NCCL=1)"; exit 1; fi; \
-    fi; \
-    if [[ "${ENABLE_CUFILE}" == "1" ]]; then \
-      ok=0; \
-      for pkgs in "libcufile-dev-13-1 libcufile-13-1" "libcufile-dev-13-0 libcufile-13-0" "libcufile-dev libcufile0" "nvidia-gds"; do \
-        if apt-get install -y --no-install-recommends ${pkgs}; then ok=1; break; fi; \
-      done; \
-      if [[ "${ok}" != "1" ]]; then echo "[ERROR] Failed to install cuFile/GDS userspace (ENABLE_CUFILE=1)"; exit 1; fi; \
-    fi; \
+# cuDNN / NCCL / cuFile
+RUN set -eux && apt-get update && \
+    if [ "${ENABLE_CUDNN}" = "1" ]; then \
+      apt-get install -y --no-install-recommends cudnn9-cuda-13-1 || \
+      apt-get install -y --no-install-recommends cudnn9-cuda-13-0 || \
+      apt-get install -y --no-install-recommends libcudnn9 libcudnn9-dev || \
+      { echo "[ERROR] Failed to install cuDNN"; exit 1; }; \
+    fi && \
+    if [ "${ENABLE_SYSTEM_NCCL}" = "1" ]; then \
+      apt-get install -y --no-install-recommends libnccl2 libnccl-dev || \
+      apt-get install -y --no-install-recommends libnccl-dev || \
+      { echo "[ERROR] Failed to install NCCL"; exit 1; }; \
+    fi && \
+    if [ "${ENABLE_CUFILE}" = "1" ]; then \
+      apt-get install -y --no-install-recommends libcufile-dev-13-1 libcufile-13-1 || \
+      apt-get install -y --no-install-recommends libcufile-dev-13-0 libcufile-13-0 || \
+      apt-get install -y --no-install-recommends libcufile-dev libcufile0 || \
+      apt-get install -y --no-install-recommends nvidia-gds || \
+      { echo "[ERROR] Failed to install cuFile"; exit 1; }; \
+    fi && \
     rm -rf /var/lib/apt/lists/*
 
+# uv + tiktoken
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
-    ln -sf /root/.cargo/bin/uv /usr/local/bin/uv
-
-WORKDIR /opt
-
-RUN mkdir -p "${TIKTOKEN_ENCODINGS_BASE}" && \
-    wget -qO "${TIKTOKEN_ENCODINGS_BASE}/o200k_base.tiktoken" "https://openaipublic.blob.core.windows.net/encodings/o200k_base.tiktoken" && \
-    wget -qO "${TIKTOKEN_ENCODINGS_BASE}/cl100k_base.tiktoken" "https://openaipublic.blob.core.windows.net/encodings/cl100k_base.tiktoken"
+    cp /root/.local/bin/uv /root/.local/bin/uvx /usr/local/bin/ && \
+    rm -rf /root/.local /root/.profile /root/.bashrc && \
+    mkdir -p "${TIKTOKEN_ENCODINGS_BASE}" && \
+    wget -qO "${TIKTOKEN_ENCODINGS_BASE}/o200k_base.tiktoken" \
+      "https://openaipublic.blob.core.windows.net/encodings/o200k_base.tiktoken" && \
+    wget -qO "${TIKTOKEN_ENCODINGS_BASE}/cl100k_base.tiktoken" \
+      "https://openaipublic.blob.core.windows.net/encodings/cl100k_base.tiktoken"
 
 COPY scripts/patches /opt/patches
-
-ARG VLLM_REPO=https://github.com/vllm-project/vllm.git
-ARG VLLM_REF=main
 
 RUN git clone --depth=1 --branch "${VLLM_REF}" "${VLLM_REPO}" /opt/vllm
 
 WORKDIR /opt/vllm
 
-RUN curl -L https://patch-diff.githubusercontent.com/raw/vllm-project/vllm/pull/28099.diff | git apply
+# Apply PR patch (optional - remove when merged)
+RUN curl -fsSL https://patch-diff.githubusercontent.com/raw/vllm-project/vllm/pull/28099.diff \
+      | git apply --check 2>/dev/null && \
+    curl -fsSL https://patch-diff.githubusercontent.com/raw/vllm-project/vllm/pull/28099.diff \
+      | git apply || echo "[WARN] PR #28099 patch skipped (already merged or conflicts)"
 
+# Layer 1: venv + pre-built wheels
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=cache,target=/root/.cache/pip \
-    <<BASH bash
-set -euo pipefail
+    --mount=type=cache,target=/root/.cache/ccache \
+    uv venv --python "/usr/bin/python${PYTHON_VERSION}" --seed && \
+    uv pip install xgrammar "huggingface_hub[cli]" hf-transfer && \
+    uv pip install apache-tvm-ffi nvidia-ml-py nvidia-cutlass-dsl nvidia-cudnn-frontend && \
+    # uv pip install click einops tabulate && \
+    uv pip install flashinfer-python --prerelease=allow --index-url https://flashinfer.ai/whl/nightly/ --no-deps && \
+    uv pip install flashinfer-cubin --prerelease=allow --index-url https://flashinfer.ai/whl/nightly/ && \
+    uv pip install flashinfer-jit-cache --prerelease=allow --index-url https://flashinfer.ai/whl/nightly/cu130 && \
+    echo '[INFO] Validating nvcc sm_121a' && \
+    echo '__global__ void k(){}' | nvcc -arch=sm_121a -x cu -c - -o /dev/null
 
-uv venv --python "/usr/bin/python${PYTHON_VERSION}" --seed
-source .venv/bin/activate
+# Layer 2: PyTorch
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=cache,target=/root/.cache/pip \
+    --mount=type=cache,target=/root/.cache/ccache \
+    export CFLAGS="${CPU_OPT_FLAGS}" CXXFLAGS="${CPU_OPT_FLAGS}" && \
+    export MAX_JOBS="$(nproc)" CMAKE_GENERATOR="Ninja" && \
+    echo "[INFO] Building PyTorch (TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST_DEFAULT})" && \
+    git clone --recursive --depth=1 --branch "${PYTORCH_REF}" "${PYTORCH_REPO}" /opt/pytorch && \
+    cd /opt/pytorch && \
+    if [ "${APPLY_PYTORCH_SM121_PATCH}" = "1" ] && [ -f /opt/patches/pytorch-sm121.patch ]; then \
+      git apply --check /opt/patches/pytorch-sm121.patch 2>/dev/null && \
+        git apply /opt/patches/pytorch-sm121.patch && echo "[INFO] Applied pytorch-sm121.patch" || \
+        echo "[WARN] pytorch-sm121.patch skipped (already applied or conflicts)"; \
+    fi && \
+    export USE_CUDA=1 USE_DISTRIBUTED=1 BUILD_TEST=0 USE_KINETO=0 USE_ITT=0 USE_MKLDNN=0 && \
+    export USE_CUDNN="${ENABLE_CUDNN}" USE_CUFILE="${ENABLE_CUFILE}" USE_SYSTEM_NCCL="${ENABLE_SYSTEM_NCCL}" && \
+    export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST_DEFAULT}" && \
+    uv pip install -r requirements.txt && \
+    python setup.py bdist_wheel && \
+    uv pip install dist/torch-*.whl && \
+    cd / && rm -rf /opt/pytorch
 
-export CFLAGS="${CPU_OPT_FLAGS}"
-export CXXFLAGS="${CPU_OPT_FLAGS}"
-export MAX_JOBS="$(nproc)"
-export CMAKE_GENERATOR="Ninja"
+# Layer 3: LLVM
+RUN --mount=type=cache,target=/root/.cache/ccache \
+    if [ "${ENABLE_TRITON_SOURCE}" != "1" ]; then exit 0; fi && \
+    if [ "${LLVM_BUILD_FROM_SOURCE}" = "1" ]; then \
+      echo "[INFO] Building LLVM from source" && \
+      export CC="ccache clang" CXX="ccache clang++" && \
+      git clone --depth=1 --branch "${LLVM_REF}" "${LLVM_REPO}" /opt/llvm-project && \
+      cmake -S /opt/llvm-project/llvm -B /opt/llvm-project/build -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX="${LLVM_PREFIX}" \
+        -DLLVM_ENABLE_PROJECTS="mlir;llvm;lld" \
+        -DLLVM_TARGETS_TO_BUILD="host;NVPTX" \
+        -DLLVM_ENABLE_ASSERTIONS=OFF \
+        -DLLVM_ENABLE_TERMINFO=OFF \
+        -DLLVM_ENABLE_ZLIB=ON \
+        -DCMAKE_C_COMPILER="${CC}" \
+        -DCMAKE_CXX_COMPILER="${CXX}" \
+        -DCMAKE_C_FLAGS="${CPU_OPT_FLAGS}" \
+        -DCMAKE_CXX_FLAGS="${CPU_OPT_FLAGS}" && \
+      cmake --build /opt/llvm-project/build -j"$(nproc)" && \
+      cmake --install /opt/llvm-project/build && \
+      rm -rf /opt/llvm-project; \
+    else \
+      echo "[INFO] Installing LLVM ${LLVM_VERSION} from apt.llvm.org" && \
+      curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor -o /usr/share/keyrings/llvm.gpg && \
+      echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-${LLVM_VERSION} main" \
+        > /etc/apt/sources.list.d/llvm.list && \
+      apt-get update && apt-get install -y --no-install-recommends \
+        llvm-${LLVM_VERSION}-dev mlir-${LLVM_VERSION}-tools libmlir-${LLVM_VERSION}-dev \
+        clang-${LLVM_VERSION} lld-${LLVM_VERSION} && \
+      rm -rf /var/lib/apt/lists/*; \
+    fi
 
-uv pip install xgrammar
-uv pip install flashinfer-python --prerelease=allow --index-url https://flashinfer.ai/whl/nightly/ --no-deps
-uv pip install flashinfer-cubin --prerelease=allow --index-url https://flashinfer.ai/whl/nightly/
-uv pip install flashinfer-jit-cache --prerelease=allow --index-url https://flashinfer.ai/whl/nightly/cu130
-uv pip install "huggingface_hub[cli]" hf-transfer
+# Layer 4: Triton
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=cache,target=/root/.cache/pip \
+    --mount=type=cache,target=/root/.cache/ccache \
+    if [ "${ENABLE_TRITON_SOURCE}" = "1" ]; then \
+      if [ "${LLVM_BUILD_FROM_SOURCE}" = "1" ]; then \
+        export LLVM_DIR="${LLVM_PREFIX}/lib/cmake/llvm" && \
+        export PATH="${LLVM_PREFIX}/bin:${PATH}" && \
+        export LD_LIBRARY_PATH="${LLVM_PREFIX}/lib:${LD_LIBRARY_PATH:-}"; \
+      else \
+        export LLVM_DIR="/usr/lib/llvm-${LLVM_VERSION}/lib/cmake/llvm" && \
+        export PATH="/usr/lib/llvm-${LLVM_VERSION}/bin:${PATH}" && \
+        export LD_LIBRARY_PATH="/usr/lib/llvm-${LLVM_VERSION}/lib:${LD_LIBRARY_PATH:-}"; \
+      fi && \
+      echo "[INFO] Building Triton from source" && \
+      uv pip install pybind11 && \
+      export TRITON_BUILD_WITH_CLANG_LLD=true TRITON_BUILD_WITH_CCACHE=true && \
+      git clone --depth=1 --branch "${TRITON_REF}" "${TRITON_REPO}" /opt/triton && \
+      cd /opt/triton && \
+      git submodule update --init --recursive --depth=1 && \
+      uv pip install --no-build-isolation . && \
+      cd / && rm -rf /opt/triton; \
+    else \
+      uv pip install triton --prerelease=allow; \
+    fi
 
-echo "[INFO] Validating nvcc supports sm_121a"
-printf '%s\n' '__global__ void k(){}' > /tmp/arch_test.cu
-nvcc -arch=sm_121a -c /tmp/arch_test.cu -o /tmp/arch_test.o
+# Layer 5: FlashAttention
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=cache,target=/root/.cache/pip \
+    --mount=type=cache,target=/root/.cache/ccache \
+    if [ "${ENABLE_FLASH_ATTN}" != "1" ]; then exit 0; fi && \
+    export CFLAGS="${CPU_OPT_FLAGS}" CXXFLAGS="${CPU_OPT_FLAGS}" && \
+    export MAX_JOBS="$(nproc)" CMAKE_GENERATOR="Ninja" && \
+    echo "[INFO] Building FlashAttention for sm_121a" && \
+    git clone --recursive --depth=1 --branch "${FLASH_ATTN_REF}" "${FLASH_ATTN_REPO}" /opt/flash-attn && \
+    cd /opt/flash-attn && \
+    if [ -f /opt/patches/flash-attn-sm121.patch ]; then \
+      patch -p1 --forward < /opt/patches/flash-attn-sm121.patch && \
+        echo "[INFO] Applied flash-attn-sm121.patch" || \
+        echo "[WARN] flash-attn-sm121.patch skipped (already applied or conflicts)"; \
+    fi && \
+    FLASH_ATTN_CUDA_ARCHS="121a" uv pip install --no-build-isolation . && \
+    cd / && rm -rf /opt/flash-attn
 
-echo "[INFO] Building PyTorch from source for TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST_DEFAULT}"
-git clone --recursive --depth=1 --branch "${PYTORCH_REF}" "${PYTORCH_REPO}" /opt/pytorch
-pushd /opt/pytorch
-if [[ "${APPLY_PYTORCH_SM121_PATCH}" == "1" && -f /opt/patches/pytorch-sm121.patch ]]; then
-  git apply /opt/patches/pytorch-sm121.patch || echo "[WARN] pytorch-sm121.patch did not apply cleanly; continuing."
-fi
+# Layer 6: vLLM
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=cache,target=/root/.cache/pip \
+    --mount=type=cache,target=/root/.cache/ccache \
+    export CFLAGS="${CPU_OPT_FLAGS}" CXXFLAGS="${CPU_OPT_FLAGS}" && \
+    export MAX_JOBS="$(nproc)" CMAKE_GENERATOR="Ninja" && \
+    python use_existing_torch.py && \
+    sed -i '/flashinfer/d;/flash-attn/d' requirements/cuda.txt && \
+    uv pip install -r requirements/build.txt -r requirements/cuda.txt && \
+    uv pip install --no-build-isolation . -v --pre
 
-export USE_CUDA=1
-export USE_CUDNN="${ENABLE_CUDNN}"
-export USE_CUFILE="${ENABLE_CUFILE}"
-export USE_SYSTEM_NCCL="${ENABLE_SYSTEM_NCCL}"
-export USE_DISTRIBUTED=1
-export BUILD_TEST=0 USE_KINETO=0 USE_ITT=0 USE_MKLDNN=0
-export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST_DEFAULT}"
-echo "[INFO] TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST}"
+# Collect runtime libs (resolve symlinks, dedupe)
+RUN set -eux && mkdir -p /opt/runtime-libs && \
+    for pat in libcudnn libcudnn_ops libcudnn_adv libcudnn_graph libnccl libcufile libcusparseLt; do \
+      ldconfig -p | awk -v p="${pat}" '$1 ~ "^"p"\\.so" {print $NF}' | while read -r lib; do \
+        [ -f "${lib}" ] && cp -Lv "${lib}" /opt/runtime-libs/ 2>/dev/null || true; \
+      done; \
+    done && \
+    ls -la /opt/runtime-libs/ || true
 
-uv pip install -r requirements.txt
-python setup.py bdist_wheel
-uv pip install dist/torch-*.whl
-popd
-
-if [[ "${ENABLE_TRITON_SOURCE}" == "1" ]]; then
-  echo "[INFO] Building Triton from source"
-  git clone --recursive --depth=1 --branch "${TRITON_REF}" "${TRITON_REPO}" /opt/triton
-  uv pip install --no-build-isolation /opt/triton/python
-else
-  uv pip install triton --prerelease=allow
-fi
-
-if [[ "${ENABLE_FLASH_ATTN}" == "1" ]]; then
-  echo "[INFO] Building FlashAttention from source for sm_121a"
-  git clone --recursive --depth=1 --branch "${FLASH_ATTN_REF}" "${FLASH_ATTN_REPO}" /opt/flash-attn
-  pushd /opt/flash-attn
-  if [[ -f /opt/patches/flash-attn-sm121.patch ]]; then
-    git apply /opt/patches/flash-attn-sm121.patch || echo "[WARN] flash-attn-sm121.patch did not apply cleanly; continuing."
-  fi
-  export FLASH_ATTN_CUDA_ARCHS="121a"
-  uv pip install --no-build-isolation .
-  popd
-fi
-
-python use_existing_torch.py
-sed -i '/flashinfer/d;/flash-attn/d' requirements/cuda.txt
-uv pip install -r requirements/build.txt
-uv pip install -r requirements/cuda.txt
-uv pip install --no-build-isolation . -v --pre
-BASH
-
-# Collect critical GPU runtime libs discovered via ldconfig so runtime image doesn't depend on apt repo availability.
-RUN set -eux; \
-    mkdir -p /opt/runtime-libs; \
-    for pat in \
-      'libcudnn.so' 'libcudnn_ops.so' 'libcudnn_adv.so' 'libcudnn_graph.so' \
-      'libnccl.so' \
-      'libcufile.so' \
-      'libcusparseLt.so' \
-    ; do \
-      p="$(ldconfig -p | awk -v re="${pat}" '$0 ~ re {print $NF; exit}' || true)"; \
-      if [[ -n "${p}" ]]; then cp -av "${p}"* /opt/runtime-libs/; fi; \
-    done
-
-ENV PATH="/opt/vllm/.venv/bin:${PATH}"
-
+# Runtime stage
 FROM ${CUDA_IMAGE_RUNTIME} AS runtime
 
 ARG DEBIAN_FRONTEND=noninteractive
+ARG PYTHON_VERSION=3.12
 ARG TORCH_CUDA_ARCH_LIST_DEFAULT="12.1a"
 
 ENV PATH="/opt/vllm/.venv/bin:/usr/local/cuda/bin:${PATH}" \
-    LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH}" \
+    LD_LIBRARY_PATH="/usr/local/cuda/lib64:/usr/local/lib:${LD_LIBRARY_PATH}" \
     TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST_DEFAULT}" \
     TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas \
     TIKTOKEN_ENCODINGS_BASE=/opt/tiktoken_encodings \
     PYTHONUNBUFFERED=1
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-      python3.12 python3.12-venv python3-pip \
-      ca-certificates curl libssl-dev libffi-dev libopenmpi3 libgomp1 \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python${PYTHON_VERSION} python${PYTHON_VERSION}-venv python3-pip \
+      ca-certificates curl libssl-dev libffi-dev libopenmpi3 libgomp1 libnuma1 \
       cuda-nvcc-13-1 && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/vllm
 
-COPY --from=builder /opt/tiktoken_encodings /opt/tiktoken_encodings
-COPY --from=builder /opt/runtime-libs /usr/local/lib
-COPY --from=builder /opt/vllm/.venv /opt/vllm/.venv
+COPY --link --from=builder /opt/tiktoken_encodings /opt/tiktoken_encodings
+COPY --link --from=builder /opt/runtime-libs /usr/local/lib
+COPY --link --from=builder /opt/vllm/.venv /opt/vllm/.venv
 
-RUN set -eux; \
-    apt-get update; \
-    ok=0; \
-    for pkgs in "libopenblas0-pthread" "libopenblas0-openmp" "libopenblas0-serial" "libopenblas0"; do \
-      if apt-get install -y --no-install-recommends ${pkgs}; then ok=1; break; fi; \
-    done; \
-    rm -rf /var/lib/apt/lists/*; \
-    if [[ "${ok}" != "1" ]]; then echo "[WARN] OpenBLAS runtime package not installed"; fi
+# OpenBLAS runtime (try variants in order of preference)
+RUN set -eux && apt-get update && \
+    for pkg in libopenblas0-pthread libopenblas0-openmp libopenblas0-serial libopenblas0; do \
+      apt-get install -y --no-install-recommends "${pkg}" 2>/dev/null && break || true; \
+    done && \
+    rm -rf /var/lib/apt/lists/* && ldconfig
 
-RUN ldconfig
-
-CMD ["sleep", "infinity"]
-
+ENTRYPOINT ["python", "-m", "vllm.entrypoints.openai.api_server"]
