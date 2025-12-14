@@ -10,6 +10,10 @@ docker run \
   --ipc=host \
   --shm-size=16g \
   -v "${HF_HOME:-$HOME/.cache/huggingface}:/root/.cache/huggingface" \
+  -e VLLM_LOGGING_LEVEL="${VLLM_LOGGING_LEVEL:-INFO}" \
+  -e VLLM_USE_FLASHINFER_MOE_FP4=1 \
+  -e VLLM_FLASHINFER_MOE_BACKEND="${VLLM_FLASHINFER_MOE_BACKEND:-throughput}" \
+  -e FLASHINFER_LOGGING_LEVEL="${FLASHINFER_LOGGING_LEVEL:-error}" \
   vllm:intellect3 \
   --model openai/gpt-oss-20b \
   --async-scheduling \

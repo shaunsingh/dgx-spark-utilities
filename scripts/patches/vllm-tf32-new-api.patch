@@ -1,0 +1,17 @@
+diff --git a/vllm/v1/worker/gpu_worker.py b/vllm/v1/worker/gpu_worker.py
+index 2f58744..aa9f4e1 100644
+--- a/vllm/v1/worker/gpu_worker.py
++++ b/vllm/v1/worker/gpu_worker.py
+@@ -80,9 +80,17 @@ class Worker(WorkerBase):
+         )
+ 
+         # configure float32 matmul precision according to vLLM env.
+         precision = envs.VLLM_FLOAT32_MATMUL_PRECISION
+-        torch.backends.cuda.matmul.fp32_precision = precision
++        # Avoid mixing legacy and new TF32 APIs. Use the new matmul precision API.
++        # - "tf32" => enable TF32 fast path for FP32 matmul
++        # - "ieee" => prefer full FP32 precision
++        torch.set_float32_matmul_precision(
++            "high" if precision == "tf32" else "highest"
++        )
+

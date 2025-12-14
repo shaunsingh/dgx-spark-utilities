@@ -17,6 +17,11 @@ CONTAINER_NAME="${CONTAINER_NAME:-vllm-single}"
 VLLM_IMAGE="${VLLM_IMAGE:-nvcr.io/nvidia/vllm:25.11-py3}"
 VLLM_PORT="${VLLM_PORT:-8000}"
 HF_CACHE="${HF_CACHE:-$HOME/.cache/huggingface/hub}"
+# Persistent JIT caches
+# These survive container recreation and avoid re-JIT-compiling kernels on every launch.
+FLASHINFER_CACHE="${FLASHINFER_CACHE:-$HOME/.cache/flashinfer}"
+TRITON_CACHE="${TRITON_CACHE:-$HOME/.cache/triton}"
+TORCH_CACHE="${TORCH_CACHE:-$HOME/.cache/torch}"
 SHM_SIZE="${SHM_SIZE:-16g}"
 SWAP_SPACE="${SWAP_SPACE:-16}"
 LOAD_FORMAT="${LOAD_FORMAT:-safetensors}"
@@ -233,6 +238,7 @@ log "TP: ${TENSOR_PARALLEL}, mem: ${MODEL_MEM_FRACTION}, max_tokens: ${MODEL_MAX
 log "Port: ${VLLM_PORT}, Image: ${VLLM_IMAGE}, HF cache: ${HF_CACHE_MOUNT}"
 
 mkdir -p "${HF_CACHE_MOUNT}"
+mkdir -p "${FLASHINFER_CACHE%/}" "${TRITON_CACHE%/}" "${TORCH_CACHE%/}"
 
 if [ "${SKIP_PULL}" != "true" ]; then
   log "Pulling image ${VLLM_IMAGE}..."
@@ -285,6 +291,11 @@ while IFS= read -r name; do
   [ -n "${name}" ] && DOCKER_ENV_ARGS+=(-e "${name}=${!name}")
 done < <(compgen -v VLLM_ || true)
 
+# Pass through FlashInfer knobs (logging, cache behavior, etc.)
+while IFS= read -r name; do
+  [ -n "${name}" ] && DOCKER_ENV_ARGS+=(-e "${name}=${!name}")
+done < <(compgen -v FLASHINFER_ || true)
+
 log "Starting vLLM server..."
 docker run -d \
   --restart unless-stopped \
@@ -296,6 +307,9 @@ docker run -d \
   --ulimit stack=67108864 \
   --cap-add=SYS_NICE \
   -v "${HF_CACHE_MOUNT}:${HF_CACHE_IN_CONTAINER}" \
+  -v "${FLASHINFER_CACHE%/}:/root/.cache/flashinfer" \
+  -v "${TRITON_CACHE%/}:/root/.cache/triton" \
+  -v "${TORCH_CACHE%/}:/root/.cache/torch" \
   "${DOCKER_ENV_ARGS[@]}" \
   "${VLLM_IMAGE}" "${VLLM_ARGS[@]}"
 

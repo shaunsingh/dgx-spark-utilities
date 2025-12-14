@@ -42,7 +42,7 @@ choose_network() {
     HOST_ARGS=()
   else
     NETWORK_MODE="bridge"
-    PORT_ARGS=( -p "${HOST_PORT}:8080" )
+    PORT_ARGS=( -p "${HOST_PORT}:3000" )
     HOST_ARGS=(
       --add-host "${HOST_ALIAS}:host-gateway"
     )
@@ -94,7 +94,7 @@ main() {
 
   log "Running. Press Ctrl+C to stop ${NAME} (if this script started it)."
   if [ "${NETWORK_MODE}" = "host" ]; then
-    log "OpenWebUI is reachable at http://127.0.0.1:8080"
+    log "OpenWebUI is reachable at http://127.0.0.1:3000"
     log "Inside OpenWebUI, use http://127.0.0.1:<port>/ for host services."
   else
     log "OpenWebUI is reachable at http://127.0.0.1:${HOST_PORT}"
