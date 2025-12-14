@@ -15,6 +15,12 @@ PROBE_IMAGE="${PROBE_IMAGE:-alpine:3.20}"
 AUTO_BUILD="${AUTO_BUILD:-1}"
 UPDATE_REPO="${UPDATE_REPO:-0}"
 
+MY_AGENT_PORT="${MY_AGENT_PORT:-8002}"
+MY_OPENAI_API_KEY="${MY_OPENAI_API_KEY:-sk-local}"
+ENABLE_OLLAMA_API="${ENABLE_OLLAMA_API:-false}"
+WEBUI_AUTH="${WEBUI_AUTH:-false}"
+OPENWEBUI_ENABLE_USER_MEMORY="${OPENWEBUI_ENABLE_USER_MEMORY:-true}"
+
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 REPO_DIR="${REPO_DIR:-${ROOT_DIR}/.cache/vela-chat}"
@@ -93,6 +99,15 @@ choose_network() {
   fi
 }
 
+compute_openai_base() {
+  # In host networking, localhost inside container == host. In bridge, use host alias.
+  if [ "${NETWORK_MODE}" = "host" ]; then
+    OPENAI_BASE="http://127.0.0.1:${MY_AGENT_PORT}/v1"
+  else
+    OPENAI_BASE="http://${HOST_ALIAS}:${MY_AGENT_PORT}/v1"
+  fi
+}
+
 recreate_if_network_changed() {
   local existing_id current_net
   existing_id="$(docker ps -aq --filter "name=^${NAME}$" || true)"
@@ -126,6 +141,13 @@ start_container() {
       --network "${NETWORK_MODE}" \
       -v "${DATA_VOL}":/app/backend/data \
       -v "${OLLAMA_VOL}":/root/.ollama \
+      -e OPENAI_API_BASE="${OPENAI_BASE}" \
+      -e OPENAI_API_BASE_URLS="${OPENAI_BASE}" \
+      -e OPENAI_BASE_URL="${OPENAI_BASE}" \
+      -e OPENAI_API_KEY="${MY_OPENAI_API_KEY}" \
+      -e ENABLE_OLLAMA_API="${ENABLE_OLLAMA_API}" \
+      -e WEBUI_AUTH="${WEBUI_AUTH}" \
+      -e OPENWEBUI_ENABLE_USER_MEMORY="${OPENWEBUI_ENABLE_USER_MEMORY}" \
       --name "${NAME}" "${IMAGE}" >/dev/null
   fi
 
@@ -135,6 +157,7 @@ start_container() {
 main() {
   ensure_docker
   choose_network
+  compute_openai_base
   start_container
 
   log "Running. Press Ctrl+C to stop ${NAME} (if this script started it)."
@@ -146,6 +169,7 @@ main() {
     log "Inside VelaChat, use http://${HOST_ALIAS}:<port>/ for host services."
     log "If host services listen only on 127.0.0.1, expose them on 0.0.0.0 or a routable IP."
   fi
+  log "Configured OpenAI base: ${OPENAI_BASE}"
   while :; do sleep 86400; done
 }
 

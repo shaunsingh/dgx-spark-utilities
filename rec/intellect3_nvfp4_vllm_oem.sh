@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+CONTAINER_NAME="${CONTAINER_NAME:-intellect3-nvfp4-vllm-oem}"
 
 # HuggingFace cache setup
 HF_CACHE="${HF_CACHE:-$HOME/.cache/huggingface/hub}"
@@ -22,6 +23,8 @@ MAX_NUM_SEQS="${MAX_NUM_SEQS:-256}"
 # ./benchmark.sh --backends vllm --model Firworks/INTELLECT-3-nvfp4 --text-output bench.txt
 
 docker run \
+  --name "${CONTAINER_NAME}" \
+  --rm \
   --runtime nvidia \
   --gpus all \
   -p 8000:8000 \
