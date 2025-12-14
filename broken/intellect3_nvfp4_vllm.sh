@@ -12,4 +12,6 @@ exec "${ROOT_DIR}/vllm.sh" \
   --mem 0.90 \
   --max-tokens 23040 \
   --skip-pull \
+  --expert-parallel false \
+  --trust-remote-code false \
   --extra-args "--enable-auto-tool-choice --tool-call-parser qwen3_coder --reasoning-parser deepseek_r1 --dtype auto"

@@ -92,29 +92,24 @@ stop_container() {
   fi
 }
 
-print_logs_tail() {
-  docker exec "${CONTAINER_NAME}" bash -lc "tail -n 80 /var/log/vllm.log" 2>/dev/null || true
-}
-
 stream_logs_until_ready() {
   local url="$1"
   local start=${SECONDS}
-  log "Streaming vLLM logs until health endpoint is ready..."
-  docker exec "${CONTAINER_NAME}" bash -lc "tail -n 50 -f /var/log/vllm.log" &
+  log "Streaming logs until health endpoint is ready..."
+  docker logs -f "${CONTAINER_NAME}" 2>&1 &
   local log_pid=$!
-  cleanup_logs() {
-    kill "${log_pid}" >/dev/null 2>&1 || true
-    wait "${log_pid}" 2>/dev/null || true
-  }
+  trap 'kill "${log_pid}" 2>/dev/null || true' RETURN
   while true; do
     if curl -sf --max-time 2 "${url}/health" >/dev/null 2>&1; then
-      cleanup_logs
+      kill "${log_pid}" 2>/dev/null || true
+      wait "${log_pid}" 2>/dev/null || true
       log "vLLM healthy after $((SECONDS - start))s"
       return 0
     fi
     if ! docker ps --format '{{.Names}}' | grep -qx "${CONTAINER_NAME}"; then
-      cleanup_logs
-      log "Container ${CONTAINER_NAME} stopped before health ready"
+      kill "${log_pid}" 2>/dev/null || true
+      wait "${log_pid}" 2>/dev/null || true
+      log "Container ${CONTAINER_NAME} exited before health ready"
       return 1
     fi
     sleep 2
@@ -248,49 +243,20 @@ fi
 
 stop_container
 
-DOCKER_ENV_ARGS=()
-if [ -n "${HF_TOKEN:-}" ]; then
-  DOCKER_ENV_ARGS+=(-e HF_TOKEN="${HF_TOKEN}")
-fi
-
-mapfile -t VLLM_ENV_NAMES < <(compgen -v VLLM_)
-VLLM_ENV_ARGS=()
-for name in "${VLLM_ENV_NAMES[@]}"; do
-  VLLM_ENV_ARGS+=("${name}=${!name}")
-done
-
-log "Starting container ${CONTAINER_NAME}..."
-docker run -d \
-  --restart unless-stopped \
-  --name "${CONTAINER_NAME}" \
-  --gpus all \
-  --network host \
-  --shm-size="${SHM_SIZE}" \
-  --ulimit memlock=-1 \
-  --ulimit stack=67108864 \
-  --cap-add=SYS_NICE \
-  -v "${HF_CACHE_MOUNT}:${HF_CACHE_IN_CONTAINER}" \
-  "${DOCKER_ENV_ARGS[@]}" \
-  "${VLLM_IMAGE}" sleep infinity
-
-docker ps --format '{{.Names}}' | grep -qx "${CONTAINER_NAME}" || die "Container failed to start"
-
-docker exec "${CONTAINER_NAME}" env \
-  HF_HOME="${HF_HOME_IN_CONTAINER}" \
-  ${HF_TOKEN:+HF_TOKEN="${HF_TOKEN}"} \
-  bash -lc "mkdir -p /var/log && touch /var/log/vllm.log" >/dev/null 2>&1 || true
-
+# Pre-download model using ephemeral container
 log "Downloading model ${MODEL_ID}..."
-docker exec "${CONTAINER_NAME}" env \
-  HF_HOME="${HF_HOME_IN_CONTAINER}" \
-  ${HF_TOKEN:+HF_TOKEN="${HF_TOKEN}"} \
-  bash -lc "hf download ${MODEL_ID} ${HF_TOKEN:+--token ${HF_TOKEN}} --exclude 'original/*' --exclude 'metal/*' >/tmp/hf.log 2>&1" \
-  || die "Model download failed. Check docker exec ${CONTAINER_NAME} cat /tmp/hf.log"
+docker run --rm \
+  -v "${HF_CACHE_MOUNT}:${HF_CACHE_IN_CONTAINER}" \
+  -e HF_HOME="${HF_HOME_IN_CONTAINER}" \
+  ${HF_TOKEN:+-e HF_TOKEN="${HF_TOKEN}"} \
+  --entrypoint "" \
+  "${VLLM_IMAGE}" \
+  hf download "${MODEL_ID}" ${HF_TOKEN:+--token "${HF_TOKEN}"} --exclude 'original/*' --exclude 'metal/*' \
+  || die "Model download failed"
 
-log "Starting vLLM server..."
-docker exec "${CONTAINER_NAME}" bash -lc "pkill -f 'vllm serve' 2>/dev/null || true" || true
-
+# Build vLLM args
 VLLM_ARGS=(
+  "${MODEL_ID}"
   --host 0.0.0.0
   --port "${VLLM_PORT}"
   --tensor-parallel-size "${TENSOR_PARALLEL}"
@@ -309,18 +275,38 @@ if [ -n "${EXTRA_ARGS}" ]; then
   VLLM_ARGS+=("${EXTRA_ARR[@]}")
 fi
 
-docker exec "${CONTAINER_NAME}" env \
-  HF_HOME="${HF_HOME_IN_CONTAINER}" \
-  ${HF_TOKEN:+HF_TOKEN="${HF_TOKEN}"} \
-  "${VLLM_ENV_ARGS[@]}" \
-  bash -lc "export PYTHONUNBUFFERED=1; nohup vllm serve ${MODEL_ID} ${VLLM_ARGS[*]} > /var/log/vllm.log 2>&1 &"
+# Collect VLLM_* env vars to pass to container
+DOCKER_ENV_ARGS=()
+[ -n "${HF_TOKEN:-}" ] && DOCKER_ENV_ARGS+=(-e HF_TOKEN="${HF_TOKEN}")
+DOCKER_ENV_ARGS+=(-e HF_HOME="${HF_HOME_IN_CONTAINER}")
+DOCKER_ENV_ARGS+=(-e PYTHONUNBUFFERED=1)
+
+while IFS= read -r name; do
+  [ -n "${name}" ] && DOCKER_ENV_ARGS+=(-e "${name}=${!name}")
+done < <(compgen -v VLLM_ || true)
+
+log "Starting vLLM server..."
+docker run -d \
+  --restart unless-stopped \
+  --name "${CONTAINER_NAME}" \
+  --gpus all \
+  --network host \
+  --shm-size="${SHM_SIZE}" \
+  --ulimit memlock=-1 \
+  --ulimit stack=67108864 \
+  --cap-add=SYS_NICE \
+  -v "${HF_CACHE_MOUNT}:${HF_CACHE_IN_CONTAINER}" \
+  "${DOCKER_ENV_ARGS[@]}" \
+  "${VLLM_IMAGE}" "${VLLM_ARGS[@]}"
+
+docker ps --format '{{.Names}}' | grep -qx "${CONTAINER_NAME}" || die "Container failed to start"
 
 API_URL="http://127.0.0.1:${VLLM_PORT}"
 
 if [ "${NO_WAIT}" != "true" ]; then
   if ! stream_logs_until_ready "${API_URL}"; then
     log "Health not ready; recent logs:"
-    print_logs_tail
+    docker logs --tail 80 "${CONTAINER_NAME}" 2>&1 || true
   fi
 else
   log "Skipping health wait (--no-wait)"
@@ -338,7 +324,7 @@ JSON
     log "Inference test: PASSED"
   else
     log "Inference test: FAILED (tailing logs)"
-    print_logs_tail
+    docker logs --tail 80 "${CONTAINER_NAME}" 2>&1 || true
   fi
 else
   log "Skipping test (--no-test)"
@@ -351,6 +337,5 @@ echo " vLLM is running"
 echo "   Model:   ${MODEL_ID}"
 echo "   API:     http://${PUBLIC_IP}:${VLLM_PORT}"
 echo "   Health:  http://${PUBLIC_IP}:${VLLM_PORT}/health"
-echo "   Logs:    docker exec ${CONTAINER_NAME} tail -f /var/log/vllm.log"
+echo "   Logs:    docker logs -f ${CONTAINER_NAME}"
 echo "   Stop:    ${SCRIPT_DIR}/vllm.sh --stop"
- 
