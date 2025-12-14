@@ -7,7 +7,8 @@ set -euo pipefail
 # ./benchmark.sh --all --text-output ./bench.txt
 # ./benchmark.sh --model-scripts --text-output bench.txt
 # ./benchmark.sh --model-script ./models/llama33_70b_fp4_trt.sh --text-output bench.txt
-#  MODEL_ID=ibm-granite/granite-4.0-h-small ./benchmark.sh --all --quick --text-output ./bench.txt
+# ./benchmark.sh --model ibm-granite/granite-4.0-h-small --all --quick --text-output ./bench.txt
+# ./benchmark.sh --backends vllm --model openai/gpt-oss-20b --text-output bench.txt
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CATALOG_FILE="${SCRIPT_DIR}/model_catalog.sh"
@@ -58,6 +59,7 @@ usage() {
 Usage: $0 [options]
 
 Options:
+  -m, --model ID        Model ID to benchmark (default: from catalog)
   -n, --num-prompts N   Number of prompts (default: ${NUM_PROMPTS})
   -c, --concurrency N   Max concurrent requests (default: ${CONCURRENCY})
   -d, --dataset PATH    ShareGPT dataset path (default: auto-download)
@@ -91,6 +93,7 @@ RUN_MODEL_SCRIPTS=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    -m|--model) MODEL_ID="$2"; shift 2 ;;
     -n|--num-prompts) NUM_PROMPTS="$2"; shift 2 ;;
     -c|--concurrency) CONCURRENCY="$2"; shift 2 ;;
     -d|--dataset) DATASET_PATH="$2"; shift 2 ;;

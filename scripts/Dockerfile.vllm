@@ -253,8 +253,8 @@ ENV PATH="/opt/vllm/.venv/bin:/usr/local/cuda/bin:${PATH}" \
     PYTHONUNBUFFERED=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      python${PYTHON_VERSION} python${PYTHON_VERSION}-venv python3-pip \
-      ca-certificates curl libssl-dev libffi-dev libopenmpi3 libgomp1 libnuma1 \
+      python${PYTHON_VERSION} python${PYTHON_VERSION}-dev python${PYTHON_VERSION}-venv python3-pip \
+      build-essential ca-certificates curl libssl-dev libffi-dev libopenmpi3 libgomp1 libnuma1 \
       cuda-nvcc-13-1 && \
     rm -rf /var/lib/apt/lists/*
 
