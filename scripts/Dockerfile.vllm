@@ -18,25 +18,28 @@ ARG ENABLE_CUFILE=1
 ARG ENABLE_TRITON_SOURCE=1
 ARG ENABLE_FLASH_ATTN=1
 
-ARG PYTORCH_REPO=https://github.com/pytorch/pytorch.git
-# ARG PYTORCH_REF=2.9.1
-ARG PYTORCH_REF=main
-ARG APPLY_PYTORCH_SM121_PATCH=1
-
-ARG TRITON_REPO=https://github.com/triton-lang/triton.git
-ARG TRITON_REF=main
-
 ARG LLVM_BUILD_FROM_SOURCE=0
 ARG LLVM_VERSION=21
 ARG LLVM_REPO=https://github.com/llvm/llvm-project.git
-ARG LLVM_REF=main
 ARG LLVM_PREFIX=/opt/llvm
 
-ARG FLASH_ATTN_REPO=https://github.com/Dao-AILab/flash-attention.git
-ARG FLASH_ATTN_REF=main
+ARG PYTORCH_REPO=https://github.com/pytorch/pytorch.git
+ARG APPLY_PYTORCH_SM121_PATCH=1
 
+ARG FLASH_ATTN_REPO=https://github.com/Dao-AILab/flash-attention.git
 ARG VLLM_REPO=https://github.com/vllm-project/vllm.git
-ARG VLLM_REF=main
+ARG TRITON_REPO=https://github.com/triton-lang/triton.git
+
+# https://github.com/pytorch/pytorch/commits/main
+# https://github.com/vllm-project/vllm/commits/main
+# https://github.com/llvm/llvm-project/commits/main
+# https://github.com/triton-lang/triton/commits/main
+# https://github.com/Dao-AILab/flash-attention/commits/main
+ARG PYTORCH_REF=ffcbb7fd6109df6b65e96fe07287255e387f0123
+ARG VLLM_REF=ae2e503dda693b6b7ab9052ec61e012a3c730f2f
+ARG LLVM_REF=9975cb166ea3925738abb8d0db0028e418315eda
+ARG TRITON_REF=84214b65456249c92d3fdbe461ae0065f40e79e9
+ARG FLASH_ATTN_REF=bc0e4ac01484ffb61ddc694724826bec4d9cf1c2
 
 ENV PATH="/opt/vllm/.venv/bin:/usr/local/bin:/usr/local/cuda/bin:${PATH}" \
     LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH}" \
@@ -89,7 +92,11 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
 
 COPY scripts/patches /opt/patches
 
-RUN git clone --depth=1 --branch "${VLLM_REF}" "${VLLM_REPO}" /opt/vllm
+RUN git init -q /opt/vllm && \
+    cd /opt/vllm && \
+    git remote add origin "${VLLM_REPO}" && \
+    git fetch -q --depth=1 origin "${VLLM_REF}" && \
+    git checkout -q FETCH_HEAD
 
 WORKDIR /opt/vllm
 
@@ -114,8 +121,14 @@ RUN set -eux; \
         fi; \
       done; \
     fi; \
-    # Sanity check: make it obvious which TF32 API vLLM will use at runtime.
-    grep -nE 'set_float32_matmul_precision|fp32_precision' vllm/v1/worker/gpu_worker.py || true
+    # Sanity check
+    if grep -RInE '^[[:space:]]*torch\\.backends\\.cuda\\.matmul\\.(allow_tf32|fp32_precision)' vllm; then \
+      echo "[ERROR] Legacy TF32 API usage found in vLLM source. Expected only torch.set_float32_matmul_precision()." >&2; \
+      exit 1; \
+    fi; \
+    grep -nE 'set_float32_matmul_precision' \
+      vllm/v1/worker/gpu_worker.py \
+      vllm/model_executor/layers/batch_invariant.py || true
 
 # Layer 1: venv + pre-built wheels
 RUN --mount=type=cache,target=/root/.cache/uv \
@@ -138,8 +151,12 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     export CFLAGS="${CPU_OPT_FLAGS}" CXXFLAGS="${CPU_OPT_FLAGS}" && \
     export MAX_JOBS="$(nproc)" CMAKE_GENERATOR="Ninja" && \
     echo "[INFO] Building PyTorch (TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST_DEFAULT})" && \
-    git clone --recursive --depth=1 --branch "${PYTORCH_REF}" "${PYTORCH_REPO}" /opt/pytorch && \
+    git init -q /opt/pytorch && \
     cd /opt/pytorch && \
+    git remote add origin "${PYTORCH_REPO}" && \
+    git fetch -q --depth=1 origin "${PYTORCH_REF}" && \
+    git checkout -q FETCH_HEAD && \
+    git submodule update --init --recursive --depth=1 && \
     if [ "${APPLY_PYTORCH_SM121_PATCH}" = "1" ] && [ -f /opt/patches/pytorch-sm121.patch ]; then \
       git apply --check /opt/patches/pytorch-sm121.patch 2>/dev/null && \
         git apply /opt/patches/pytorch-sm121.patch && echo "[INFO] Applied pytorch-sm121.patch" || \
@@ -161,7 +178,11 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
     if [ "${LLVM_BUILD_FROM_SOURCE}" = "1" ]; then \
       echo "[INFO] Building LLVM from source" && \
       export CC="ccache clang" CXX="ccache clang++" && \
-      git clone --depth=1 --branch "${LLVM_REF}" "${LLVM_REPO}" /opt/llvm-project && \
+      git init -q /opt/llvm-project && \
+      cd /opt/llvm-project && \
+      git remote add origin "${LLVM_REPO}" && \
+      git fetch -q --depth=1 origin "${LLVM_REF}" && \
+      git checkout -q FETCH_HEAD && \
       cmake -S /opt/llvm-project/llvm -B /opt/llvm-project/build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX="${LLVM_PREFIX}" \
@@ -204,8 +225,11 @@ RUN --mount=type=cache,target=/root/.cache/uv \
       echo "[INFO] Building Triton from source" && \
       uv pip install pybind11 && \
       export TRITON_BUILD_WITH_CLANG_LLD=true TRITON_BUILD_WITH_CCACHE=true && \
-      git clone --depth=1 --branch "${TRITON_REF}" "${TRITON_REPO}" /opt/triton && \
+      git init -q /opt/triton && \
       cd /opt/triton && \
+      git remote add origin "${TRITON_REPO}" && \
+      git fetch -q --depth=1 origin "${TRITON_REF}" && \
+      git checkout -q FETCH_HEAD && \
       git submodule update --init --recursive --depth=1 && \
       uv pip install --no-build-isolation . && \
       cd / && rm -rf /opt/triton; \
@@ -221,8 +245,12 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     export CFLAGS="${CPU_OPT_FLAGS}" CXXFLAGS="${CPU_OPT_FLAGS}" && \
     export MAX_JOBS="$(nproc)" CMAKE_GENERATOR="Ninja" && \
     echo "[INFO] Building FlashAttention for sm_121a" && \
-    git clone --recursive --depth=1 --branch "${FLASH_ATTN_REF}" "${FLASH_ATTN_REPO}" /opt/flash-attn && \
+    git init -q /opt/flash-attn && \
     cd /opt/flash-attn && \
+    git remote add origin "${FLASH_ATTN_REPO}" && \
+    git fetch -q --depth=1 origin "${FLASH_ATTN_REF}" && \
+    git checkout -q FETCH_HEAD && \
+    git submodule update --init --recursive --depth=1 && \
     if [ -f /opt/patches/flash-attn-sm121.patch ]; then \
       patch -p1 --forward < /opt/patches/flash-attn-sm121.patch && \
         echo "[INFO] Applied flash-attn-sm121.patch" || \
@@ -263,6 +291,7 @@ ENV PATH="/opt/vllm/.venv/bin:/usr/local/cuda/bin:${PATH}" \
     TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST_DEFAULT}" \
     TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas \
     TIKTOKEN_ENCODINGS_BASE=/opt/tiktoken_encodings \
+    VLLM_FLOAT32_MATMUL_PRECISION=tf32 \
     PYTHONUNBUFFERED=1
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \

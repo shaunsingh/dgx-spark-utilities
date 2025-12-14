@@ -1,0 +1,1 @@
+git ls-remote https://github.com/pytorch/pytorch.git refs/heads/main; git ls-remote https://github.com/triton-lang/triton.git refs/heads/main; git ls-remote https://github.com/llvm/llvm-project.git refs/heads/main; git ls-remote https://github.com/Dao-AILab/flash-attention.git refs/heads/main; git ls-remote https://github.com/vllm-project/vllm.git refs/heads/main
