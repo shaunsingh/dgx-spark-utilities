@@ -4,7 +4,7 @@ set -euo pipefail
 NAME="${NAME:-open-webui}"
 IMAGE="${IMAGE:-ghcr.io/open-webui/open-webui:ollama}"
 HOST_ALIAS="${HOST_ALIAS:-host.docker.internal}"
-HOST_PORT="${HOST_PORT:-3000}"          # Only used when host networking is unavailable
+HOST_PORT="${HOST_PORT:-8080}"
 DATA_VOL="${DATA_VOL:-open-webui}"
 OLLAMA_VOL="${OLLAMA_VOL:-open-webui-ollama}"
 PROBE_IMAGE="${PROBE_IMAGE:-alpine:3.20}"
@@ -42,7 +42,7 @@ choose_network() {
     HOST_ARGS=()
   else
     NETWORK_MODE="bridge"
-    PORT_ARGS=( -p "${HOST_PORT}:3000" )
+    PORT_ARGS=( -p "${HOST_PORT}:8080" )
     HOST_ARGS=(
       --add-host "${HOST_ALIAS}:host-gateway"
     )
@@ -94,7 +94,7 @@ main() {
 
   log "Running. Press Ctrl+C to stop ${NAME} (if this script started it)."
   if [ "${NETWORK_MODE}" = "host" ]; then
-    log "OpenWebUI is reachable at http://127.0.0.1:3000"
+    log "OpenWebUI is reachable at http://127.0.0.1:8080"
     log "Inside OpenWebUI, use http://127.0.0.1:<port>/ for host services."
   else
     log "OpenWebUI is reachable at http://127.0.0.1:${HOST_PORT}"
