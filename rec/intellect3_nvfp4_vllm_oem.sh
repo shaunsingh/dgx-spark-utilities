@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CONTAINER_NAME="${CONTAINER_NAME:-intellect3-nvfp4-vllm-oem}"
+VLLM_PORT="${VLLM_PORT:-8000}"
 
 # HuggingFace cache setup
 HF_CACHE="${HF_CACHE:-$HOME/.cache/huggingface/hub}"
@@ -27,7 +28,7 @@ docker run \
   --rm \
   --runtime nvidia \
   --gpus all \
-  -p 8000:8000 \
+  -p "${VLLM_PORT}:8000" \
   --ipc=host \
   -v "${HF_CACHE}:${HF_CACHE_IN_CONTAINER}" \
   -v "${FLASHINFER_CACHE%/}:/root/.cache/flashinfer" \
