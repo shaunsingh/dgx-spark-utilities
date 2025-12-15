@@ -23,7 +23,14 @@ OPENWEBUI_ENABLE_USER_MEMORY="${OPENWEBUI_ENABLE_USER_MEMORY:-true}"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
-REPO_DIR="${REPO_DIR:-${ROOT_DIR}/.cache/vela-chat}"
+LOCAL_REPO_DIR="${ROOT_DIR}/../vela-chat"
+if [ -n "${REPO_DIR:-}" ]; then
+  : # user override
+elif [ -f "${LOCAL_REPO_DIR}/Dockerfile" ]; then
+  REPO_DIR="${LOCAL_REPO_DIR}"
+else
+  REPO_DIR="${ROOT_DIR}/.cache/vela-chat"
+fi
 
 started_container=0
 

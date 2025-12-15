@@ -49,6 +49,7 @@ docker run \
   --model "${MODEL_ID}" \
   --dtype auto \
   --max-model-len 23040 \
+  --max-num-seqs 720 \
   --download-dir "${HF_CACHE_IN_CONTAINER}" \
   --tensor-parallel-size 1 \
   --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}" \
