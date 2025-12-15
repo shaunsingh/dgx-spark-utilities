@@ -3,8 +3,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-CONTAINER_NAME="${CONTAINER_NAME:-intellect3-nvfp4-vllm-oem}"
+CONTAINER_NAME="${CONTAINER_NAME:-intellect3-fp8-vllm}"
 VLLM_PORT="${VLLM_PORT:-8000}"
+MODEL_ID="${LLM_MODEL:-${MODEL_ID:-PrimeIntellect/INTELLECT-3}}"
 
 # HuggingFace cache setup
 HF_CACHE="${HF_CACHE:-$HOME/.cache/huggingface/hub}"
@@ -43,7 +44,7 @@ docker run \
   -e VLLM_COMPILE_CACHE_SAVE_FORMAT="${VLLM_COMPILE_CACHE_SAVE_FORMAT:-binary}" \
   -e FLASHINFER_LOGGING_LEVEL="${FLASHINFER_LOGGING_LEVEL:-error}" \
   vllm:intellect3 \
-  --model PrimeIntellect/INTELLECT-3 \
+  --model "${MODEL_ID}" \
   --dtype auto \
   --max-model-len 23040 \
   --download-dir "${HF_CACHE_IN_CONTAINER}" \
@@ -53,10 +54,9 @@ docker run \
   --max-num-batched-tokens "${MAX_NUM_BATCHED_TOKENS}" \
   --max-num-seqs "${MAX_NUM_SEQS}" \
   --disable-log-stats \
+  --enable-auto-tool-choice \
   --tool-call-parser qwen3_coder \
   --reasoning-parser deepseek_r1
 
   # vllm/vllm-openai:latest \
   # --compilation-config '{"cudagraph_mode": "none"}' \
-  # --enable-auto-tool-choice \
-
