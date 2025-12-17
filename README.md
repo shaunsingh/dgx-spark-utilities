@@ -18,13 +18,17 @@ Shims for testing models against nvidia's containers
 
 Caches model to huggingface model directory w/ progress bar. Tired of no progressbar w/ VLLM
 
-- `models/`, `broken/`
+- `models/`, `broken/`, `rec/`
 
-Scripts to run aforementinoned models w/ custom config, `broken` are untested
+Scripts to run aforementinoned models w/ custom config, `broken` are untested, `rec` are recommended
 
 - `scripts/nvfp4i3.sh` 
 
 Example of quantizing FP8 to NVFP4
+
+- `scripts/proton.sh` 
+
+Build ARM64+Fex proton 
 
 - `benchmark.sh`, `results.txt`
 
