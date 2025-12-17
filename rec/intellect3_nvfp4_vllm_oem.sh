@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# nohup ./rec/intellect3_nvfp4_vllm_oem.sh > vllm.log 2>&1 &
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CONTAINER_NAME="${CONTAINER_NAME:-intellect3-nvfp4-vllm-oem}"
